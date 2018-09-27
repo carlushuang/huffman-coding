@@ -12,6 +12,10 @@ def parse_arg():
     parser.add_argument('-o', dest='out_file', action='store', type=str, help='output to a file')
     return parser.parse_args()
 
+def is_print(ch):
+    # https://en.cppreference.com/w/c/string/byte/isprint
+    return ch <=126 and ch>=32
+
 class bit_array(object):
     # big-endian bit stream
     def __init__(self):
@@ -135,7 +139,10 @@ class tree_node(object):
         return new_node
     def traverse_pre(self):
         # only debug use
-        print(self.value)
+        if is_print(self.value):
+            print("\'{}\'({})".format(chr(self.value), self.value))
+        else:
+            print(self.value)
         if(self.left):
             self.left.traverse_pre()
         else:
@@ -149,6 +156,30 @@ class tree_node(object):
         return self.left == None and self.right == None
     def is_internal(self):
         return self.left and self.right
+
+def serialize_int32(i32):
+    bout = bit_array()
+    cnt = 4
+    while cnt:
+        i32 = i32 & 0xffffffff
+        byte = (i32 & 0xff000000) >> 24
+        bout.write_8(byte)
+        cnt -= 1
+        i32 = i32 << 8
+    bytes, _ =  bout.get_bytes()
+    return bytes
+
+def deserialize_int32(bytes):
+    assert len(bytes) == 4
+    i32 = 0
+    b_in = bit_array()
+    b_in.set_bytes(bytes)
+    cnt = 4
+    while cnt:
+        i32 <<= 8
+        i32 |= b_in.read_8()
+        cnt -=1
+    return i32
 
 # node->byte_array, big endian
 def serialize_node(node):
@@ -208,22 +239,104 @@ def test_tree_node():
 class freq_table(object):
     def __init__(self):
         self.freqs = [0]*256
-    def build_table(self, str_array):
+    def _build_nodes_from_table(self, freqs):
+        # freqs index is the symbol(0-255)
+        # freqs value is frequency itself
+        ctor_list = []
+        if not freqs:
+            return None
+        for i, freq in enumerate(freqs):
+            if freq == 0:
+                continue
+            node = tree_node(i)
+            ctor_list.append((freq, node))
+        if not ctor_list:
+            return None
+
+        while True:
+            if len(ctor_list) == 1:
+                break
+            ctor_list.sort(key=lambda tup:tup[0], reverse=True)
+            n1 = ctor_list.pop()
+            n2 = ctor_list.pop()
+            inode = tree_node()
+            inode.left = n2[1]
+            inode.right = n1[1]
+            ctor_list.append( (n1[0]+n2[0], inode) )
+        return ctor_list[0][1]
+
+    def to_tree(self, str_array):
         if not str_array:
             return None
         for b in str_array:
             key = 0
             if type(b) is str:
                 key = ord(b)
-            else
+            else:
                 key = b
             self.freqs[key] += 1
 
-        return self.freqs
+        return self._build_nodes_from_table(self.freqs)
 
+class huffman_encoder(object):
+    def __init__(self):
+        self.freq_tbl = freq_table()
+        self.huffman_tree = None
+        self.symbol_tbl = {}
+    @staticmethod
+    def construct_symbol_tbl(huffman_tree):
+        def _traverse_ctor(node, tbl, code):
+            if node.is_leaf():
+                tbl[node.value] = code
+            elif node.is_internal():
+                _traverse_ctor(node.left, tbl, code+'0')
+                _traverse_ctor(node.right, tbl, code+'1')
+        tbl = {}
+        _traverse_ctor(huffman_tree, tbl, '')
+        return tbl
 
-def haffman_encode(str_array):
-    pass
+    @staticmethod
+    def serialize_msg(tbl, str_array):
+        bout = bit_array()
+        for s in str_array:
+            c = ord(s)
+            assert c in tbl, "char not in symbol table, should not happen"
+            code = tbl[c]
+            for c_str in code:
+                bit = 1 if c_str == '1' else 0
+                bout.write(bit)
+        return bout.get_bytes()
+
+    def encode(self, str_array):
+        self.huffman_tree = self.freq_tbl.to_tree(str_array)
+        self.symbol_tbl = self.construct_symbol_tbl(self.huffman_tree)
+        #print(self.symbol_tbl)
+        ht_code, ht_eof = serialize_node(self.huffman_tree)
+        ht_len = serialize_int32(len(ht_code) + 1)
+        msg_code, msg_eof = self.serialize_msg(self.symbol_tbl, str_array)
+        msg_len = serialize_int32(len(msg_code) + 1)
+        bytes = []
+        bytes.extend([ord('H'), ord('U'), ord('F'), ord('F')])
+        bytes.extend(ht_len)
+        bytes.extend([ht_eof])
+        bytes.extend(ht_code)
+        bytes.extend(msg_len)
+        bytes.extend([msg_eof])
+        bytes.extend(msg_code)
+
+        return bytes
+
+def huffman_encode(str_array):
+
+    ft = freq_table()
+    h_nodes = ft.to_tree(str_array)
+    assert h_nodes, "can't construct tree from inputs"
+    h_nodes.traverse_pre()
+    #ht_code, ht_eof = serialize_node(h_nodes)
+    encoder = huffman_encoder()
+    bytes = encoder.encode(str_array)
+    #print(bytes)
+
 
 def main():
     args = parse_arg()
@@ -236,10 +349,11 @@ def main():
     else:
         print('nonthing to read in')
         exit(1)
-    #print(content)
+    print(content)
+    huffman_encode(content)
 
 
 if __name__ == '__main__':
-    #main()
-    test_tree_node()
+    main()
+    #test_tree_node()
 
