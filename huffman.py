@@ -7,6 +7,8 @@ import argparse
 
 def parse_arg():
     parser = argparse.ArgumentParser()
+    parser.add_argument('-e', dest='encode', action='store_true', help='encode message')
+    parser.add_argument('-d', dest='decode', action='store_true', help='decode message')
     parser.add_argument('-f', dest='in_file', action='store', type=str, help='get input from file')
     parser.add_argument('-i', dest='in_stream', action='store', type=str, help='get input from stdin')
     parser.add_argument('-o', dest='out_file', action='store', type=str, help='output to a file')
@@ -27,13 +29,13 @@ class bit_array(object):
 
     @staticmethod
     def str_to_bytes(_str):
-        bytes = map(ord, _str)
-        return bytes
+        byte_array = map(ord, _str)
+        return byte_array
     
     @staticmethod
-    def bytes_to_str_bin(bytes):
+    def bytes_to_str_bin(byte_array):
         # return a string, only 1&0
-        return ' '.join("{:08b}".format(b) for b in bytes)
+        return ' '.join("{:08b}".format(b) for b in byte_array)
     
     def _eof_bits(self, eof):
         bits = 0
@@ -166,14 +168,14 @@ def serialize_int32(i32):
         bout.write_8(byte)
         cnt -= 1
         i32 = i32 << 8
-    bytes, _ =  bout.get_bytes()
-    return bytes
+    byte_array, _ =  bout.get_bytes()
+    return byte_array
 
-def deserialize_int32(bytes):
-    assert len(bytes) == 4
+def deserialize_int32(byte_array):
+    assert len(byte_array) == 4
     i32 = 0
     b_in = bit_array()
-    b_in.set_bytes(bytes)
+    b_in.set_bytes(byte_array)
     cnt = 4
     while cnt:
         i32 <<= 8
@@ -200,7 +202,7 @@ def serialize_node(node):
     return bit_arr.get_bytes()
 
 # byte_array->node
-def deserialize_node(bytes, eof):
+def deserialize_node(byte_array, eof):
     def _deserialize(ba):
         bit = ba.read()
         if(bit == 0):
@@ -215,10 +217,10 @@ def deserialize_node(bytes, eof):
             return node
         # maybe the end
         return None
-    if not bytes:
+    if not byte_array:
         return None
     bit_arr = bit_array()
-    bit_arr.set_bytes(bytes, eof)
+    bit_arr.set_bytes(byte_array, eof)
     node = _deserialize(bit_arr)
     return node
 
@@ -278,6 +280,59 @@ class freq_table(object):
 
         return self._build_nodes_from_table(self.freqs)
 
+class huffman_decoder(object):
+    def __init__(self):
+        self.huffman_tree = None
+    @staticmethod
+    def decode_msg(huffman_tree, msg, eof=0, decode_as_chr=True):
+        ba = bit_array()
+        ba.set_bytes(msg, eof)
+        str_array = []
+        node = huffman_tree
+        while True:
+            if node.is_leaf():
+                v = node.value
+                str_array.append( chr(v) if decode_as_chr else v )
+                node = huffman_tree
+            bit = ba.read()
+            if bit == -1:
+                break
+            if bit == 0:
+                node = huffman_tree.left
+            else
+                node = huffman_tree.right
+        return str_array
+
+
+    def decode(byte_array):
+        assert type(byte_array) is list
+        # magic
+        magic = byte_array[:4]
+        assert not set(magic) ^ set([ord('H'), ord('U'), ord('F'), ord('F')]), \
+                        "magic not valid, please check"
+        byte_array = byte_array[4:]
+
+        # TODO: need beter deserialize action
+        # huffman tree part
+        ht_len = deserialize_int32(byte_array[:4])
+        ht_total = byte_array[4 : (ht_len+4)]
+        ht_eof = ht_total[0]
+        ht_code =  ht_total[1:]
+        byte_array = byte_array[(ht_len+4):]
+        # msg part
+        msg_len = deserialize_int32(byte_array[:4])
+        msg_total = byte_array[4 : (msg_len+4)]
+        msg_eof = msg_total[0]
+        msg_code = msg_total[1:]
+
+        # rebuild the huffman tree
+        self.huffman_tree = deserialize_node(ht_code, ht_eof)
+
+        str_array = self.decode_msg(self.huffman_tree, msg_code, msg_eof, True )
+        return ''.join(str_array)
+
+
+
 class huffman_encoder(object):
     def __init__(self):
         self.freq_tbl = freq_table()
@@ -309,33 +364,28 @@ class huffman_encoder(object):
 
     def encode(self, str_array):
         self.huffman_tree = self.freq_tbl.to_tree(str_array)
+        assert self.huffman_tree, "fail to construct tree"
         self.symbol_tbl = self.construct_symbol_tbl(self.huffman_tree)
         #print(self.symbol_tbl)
         ht_code, ht_eof = serialize_node(self.huffman_tree)
         ht_len = serialize_int32(len(ht_code) + 1)
         msg_code, msg_eof = self.serialize_msg(self.symbol_tbl, str_array)
         msg_len = serialize_int32(len(msg_code) + 1)
-        bytes = []
-        bytes.extend([ord('H'), ord('U'), ord('F'), ord('F')])
-        bytes.extend(ht_len)
-        bytes.extend([ht_eof])
-        bytes.extend(ht_code)
-        bytes.extend(msg_len)
-        bytes.extend([msg_eof])
-        bytes.extend(msg_code)
+        byte_array = []
+        byte_array.extend([ord('H'), ord('U'), ord('F'), ord('F')])
+        byte_array.extend(ht_len)
+        byte_array.extend([ht_eof])
+        byte_array.extend(ht_code)
+        byte_array.extend(msg_len)
+        byte_array.extend([msg_eof])
+        byte_array.extend(msg_code)
 
-        return bytes
+        return byte_array
 
 def huffman_encode(str_array):
-
-    ft = freq_table()
-    h_nodes = ft.to_tree(str_array)
-    assert h_nodes, "can't construct tree from inputs"
-    h_nodes.traverse_pre()
-    #ht_code, ht_eof = serialize_node(h_nodes)
     encoder = huffman_encoder()
-    bytes = encoder.encode(str_array)
-    #print(bytes)
+    byte_array = encoder.encode(str_array)
+    return byte_array
 
 
 def main():
@@ -349,7 +399,18 @@ def main():
     else:
         print('nonthing to read in')
         exit(1)
-    print(content)
+    #print(content)
+    if args.encode:
+        encoded_bytes = huffman_encode(content)
+        if args.out_file:
+            with open(args.out_file, "wb") as out_file:
+
+
+    elif args.decode:
+        pass
+    else:
+        print("you must specify -e or -d")
+        return
     huffman_encode(content)
 
 
