@@ -5,6 +5,8 @@
 from __future__ import print_function
 import argparse
 
+VERBOSE = False
+
 def parse_arg():
     parser = argparse.ArgumentParser()
     parser.add_argument('-e', dest='encode', action='store_true', help='encode message')
@@ -42,6 +44,7 @@ class bit_array(object):
         while eof:
             bits += 1
             eof = eof >> 1
+        return bits
 
     def set_bytes(self, byte_array, eof = 0):
         self.eof = eof
@@ -224,20 +227,6 @@ def deserialize_node(byte_array, eof):
     node = _deserialize(bit_arr)
     return node
 
-def test_tree_node():
-    node = tree_node()
-    node.insert_left()
-    node.insert_right('C')
-    node.left.insert_right('D')
-    node.left.insert_left('E')
-    #node.traverse_in()
-    s, eof = serialize_node(node)
-    print(" ".join("0x{:x}".format(_s) for _s in s))
-    print("eof:0x{:x}".format(eof))
-    print(bit_array.bytes_to_str_bin(s))
-    new_tree = deserialize_node(s, eof)
-    new_tree.traverse_pre()
-
 class freq_table(object):
     def __init__(self):
         self.freqs = [0]*256
@@ -298,17 +287,19 @@ class huffman_decoder(object):
             if bit == -1:
                 break
             if bit == 0:
-                node = huffman_tree.left
-            else
-                node = huffman_tree.right
+                node = node.left
+            else:
+                node = node.right
+            #print("str_array:{}".format(str_array))
         return str_array
 
 
-    def decode(byte_array):
+    def decode(self, byte_array):
         assert type(byte_array) is list
         # magic
-        magic = byte_array[:4]
-        assert not set(magic) ^ set([ord('H'), ord('U'), ord('F'), ord('F')]), \
+        magic = byte_array[:4] 
+        #print(magic)
+        assert magic[0] == ord('H') and magic[1] == ord('U') and magic[2] == ord('F') and magic[3] == ord('F'), \
                         "magic not valid, please check"
         byte_array = byte_array[4:]
 
@@ -324,6 +315,14 @@ class huffman_decoder(object):
         msg_total = byte_array[4 : (msg_len+4)]
         msg_eof = msg_total[0]
         msg_code = msg_total[1:]
+
+        #print("ht_len:{}".format(ht_len))
+        #print("ht_eof:{}".format(ht_eof))
+        #print("ht_code:{}".format(ht_code))
+
+        #print("msg_len:{}".format(msg_len))
+        #print("msg_eof:{}".format(msg_eof))
+        #print("msg_code:{}".format(msg_code))
 
         # rebuild the huffman tree
         self.huffman_tree = deserialize_node(ht_code, ht_eof)
@@ -387,6 +386,10 @@ def huffman_encode(str_array):
     byte_array = encoder.encode(str_array)
     return byte_array
 
+def huffman_decode(byte_array):
+    decoder = huffman_decoder()
+    str_array = decoder.decode(byte_array)
+    return str_array
 
 def main():
     args = parse_arg()
@@ -395,26 +398,42 @@ def main():
         with open(args.in_file, mode='rb') as in_file:
             content = in_file.read()
     elif(args.in_stream):
+        if args.decode:
+            print('decode do not support read from stdin')
+            exit(1)
         content = args.in_stream
     else:
-        print('nonthing to read in')
+        print('nothing to read in')
         exit(1)
     #print(content)
     if args.encode:
         encoded_bytes = huffman_encode(content)
+        in_bytes = len(content)
+        out_bytes = len(encoded_bytes)
         if args.out_file:
             with open(args.out_file, "wb") as out_file:
-
+                for b in encoded_bytes:
+                    out_file.write(chr(b))
+        if VERBOSE:
+            cmp_rate = float(in_bytes)/float(out_bytes)
+            print("compression rate:{:.2f}".format(cmp_rate))
 
     elif args.decode:
-        pass
+        byte_array = map(ord, content)
+        #print(byte_array)
+        str_array = huffman_decode(byte_array)
+        #print("str:{}".format(str_array))
+        if args.out_file:
+            with open(args.out_file, "wb") as out_file:
+                #for b in str_array:
+                out_file.write(str_array)
+        else:
+            print(str_array)
     else:
         print("you must specify -e or -d")
         return
-    huffman_encode(content)
 
 
 if __name__ == '__main__':
     main()
-    #test_tree_node()
 
